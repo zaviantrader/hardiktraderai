@@ -1,0 +1,12 @@
+{
+  "name": "trading-janta-party",
+  "version": "1.0.0",
+  "description": "Trading Janta Party - Private OTC signal terminal",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.21.2"
+  }
+}
