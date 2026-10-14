@@ -35,6 +35,16 @@ const PAIRS = [
   'USD/BRL OTC', 'USD/INR OTC', 'EUR/GBP OTC'
 ];
 
+
+const LIVE_PAIRS = [
+  'EUR/USD', 'GBP/USD', 'USD/JPY', 'USD/CAD', 'USD/CHF',
+  'AUD/USD', 'AUD/CAD', 'AUD/NZD', 'NZD/CAD', 'EUR/GBP',
+  'CAD/CHF', 'EUR/JPY', 'GBP/JPY', 'NZD/USD', 'EUR/CHF',
+  'GBP/CHF', 'AUD/JPY', 'CHF/JPY', 'EUR/AUD', 'GBP/AUD'
+];
+
+const ALL_PAIRS = [...PAIRS, ...LIVE_PAIRS];
+
 const TIMEFRAMES = [
   '10 Seconds', '15 Seconds', '30 Seconds',
   '1 Minute', '5 Minutes'
@@ -456,7 +466,8 @@ app.post('/api/login', async (req, res) => {
 
 // Public pair and timeframe configuration
 app.get('/api/config', (req, res) => {
-  res.json({ pairs: PAIRS, timeframes: TIMEFRAMES });
+  res.set('Cache-Control', 'no-store');
+  res.json({ pairs: PAIRS, livePairs: LIVE_PAIRS, timeframes: TIMEFRAMES });
 });
 
 // Generate a signal
@@ -464,7 +475,7 @@ app.post('/api/signal', requireAuth, async (req, res) => {
   try {
     const { pair, timeframe } = req.body || {};
 
-    if (!PAIRS.includes(pair) || !TIMEFRAMES.includes(timeframe)) {
+    if (!ALL_PAIRS.includes(pair) || !TIMEFRAMES.includes(timeframe)) {
       return res.status(400).json({
         error: 'Select a valid pair and timeframe.'
       });
