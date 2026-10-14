@@ -12,7 +12,9 @@
   const pairTitle = $('pairTitle');
   const logoutBtn = $('logout');
   const pairBtn = $('pairBtn');
-  const soundBtn = $('soundBtn');
+  const otcPairBtn = $('otcPairBtn');
+  const livePairBtn = $('livePairBtn');
+  const pairLabel = $('pairLabel');
   const musicBtn = $('musicBtn');
 
   const timeframeSelect = $('timeframe');
@@ -279,43 +281,55 @@
 
   logoutBtn.addEventListener('click', showLogin);
 
+  let otcPairs = [];
+  let livePairs = [];
+  let currentPairMode = 'otc';
+
   async function loadConfig() {
     try {
       const res = await fetch('/api/config');
       const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Config request failed');
 
-      pairSelect.innerHTML = '';
-
-      data.pairs.forEach(pair => {
-        const option = document.createElement('option');
-        option.value = pair;
-        option.textContent = pair;
-        pairSelect.appendChild(option);
-      });
+      otcPairs = Array.isArray(data.pairs) ? data.pairs : [];
+      livePairs = Array.isArray(data.livePairs) ? data.livePairs : [];
 
       timeframeSelect.innerHTML = '';
-
-      data.timeframes.forEach(timeframe => {
+      (data.timeframes || []).forEach(timeframe => {
         const option = document.createElement('option');
         option.value = timeframe;
         option.textContent = timeframe;
         timeframeSelect.appendChild(option);
       });
 
-      if (data.pairs.length) {
-        pairSelect.value = data.pairs[0];
-        pairTitle.textContent = data.pairs[0];
+      if (data.timeframes && data.timeframes.length) {
+        timeframeSelect.value = data.timeframes.find(t => t === '1 Minute') || data.timeframes[0];
       }
-
-      if (data.timeframes.length) {
-        timeframeSelect.value =
-          data.timeframes.find(t => t === '1 Minute') ||
-          data.timeframes[0];
-      }
-
+      setPairMode('otc');
     } catch (error) {
       console.error('Config load failed:', error);
+      scanText.textContent = 'Unable to load pairs. Please refresh.';
     }
+  }
+
+  function setPairMode(mode) {
+    currentPairMode = mode;
+    const pairs = mode === 'otc' ? otcPairs : livePairs;
+    const previousPair = pairSelect.value;
+    pairSelect.innerHTML = '';
+
+    pairs.forEach(pair => {
+      const option = document.createElement('option');
+      option.value = pair;
+      option.textContent = pair;
+      pairSelect.appendChild(option);
+    });
+
+    pairSelect.value = pairs.includes(previousPair) ? previousPair : (pairs[0] || '');
+    pairTitle.textContent = pairSelect.value || (mode === 'otc' ? 'OTC Pair' : 'Live Pair');
+    if (pairLabel) pairLabel.textContent = mode === 'otc' ? 'OTC PAIR' : 'LIVE PAIR';
+    otcPairBtn.classList.toggle('active', mode === 'otc');
+    livePairBtn.classList.toggle('active', mode === 'live');
   }
 
   pairSelect.addEventListener('change', function () {
@@ -324,22 +338,13 @@
 
   pairBtn.addEventListener('click', function () {
     pairSelect.focus();
-
     if (typeof pairSelect.showPicker === 'function') {
-      try {
-        pairSelect.showPicker();
-      } catch (_) {}
+      try { pairSelect.showPicker(); } catch (_) {}
     }
   });
 
-  soundBtn.addEventListener('click', function () {
-    soundEnabled = !soundEnabled;
-
-    soundBtn.textContent =
-      soundEnabled ? 'Sound ON' : 'Sound OFF';
-
-    soundBtn.classList.toggle('active', soundEnabled);
-  });
+  otcPairBtn.addEventListener('click', function () { setPairMode('otc'); });
+  livePairBtn.addEventListener('click', function () { setPairMode('live'); });
 
   musicBtn.addEventListener('click', function () {
     musicEnabled = !musicEnabled;
