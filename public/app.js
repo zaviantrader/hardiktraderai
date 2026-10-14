@@ -94,9 +94,21 @@
   function showResultImage(src, alt) {
     hideResultVideo();
 
+    // Reset image state before switching CALL/PUT/WIN/LOSS stickers.
+    liveSticker.onerror = function () {
+      console.error('Signal sticker failed to load:', liveSticker.src);
+      liveSticker.alt = alt + ' image unavailable';
+      liveSticker.style.display = 'none';
+    };
+
+    liveSticker.onload = function () {
+      liveSticker.style.display = 'block';
+    };
+
     liveSticker.hidden = false;
-    liveSticker.src = src;
+    liveSticker.style.display = 'block';
     liveSticker.alt = alt;
+    liveSticker.src = src;
   }
 
   function showWinVideo() {
