@@ -21,31 +21,19 @@ const pool = process.env.DATABASE_URL
     })
   : null;
 
-// Note: These in-memory sessions and signals are temporary.
-// Use persistent sessions/storage for reliable serverless operation.
-const adminTokens = new Set();
-const activeTokens = new Set();
+// User/admin sessions are stored in PostgreSQL for Vercel serverless reliability.
+// Signal records remain in memory; use persistent storage if signals must survive cold starts.
 const pendingSignals = new Map();
 
 app.use(express.json({ limit: '20kb' }));
 app.use(express.static(path.join(__dirname, 'public')));
 
 const PAIRS = [
-  'EUR/USD OTC', 'GBP/USD OTC', 'USD/JPY OTC', 'USD/CAD OTC',
-  'USD/CHF OTC', 'AUD/USD OTC', 'AUD/CAD OTC', 'AUD/NZD OTC',
-  'NZD/CAD OTC', 'USD/BRL OTC', 'USD/INR OTC', 'EUR/GBP OTC',
-  'CAD/CHF OTC', 'EUR/JPY OTC', 'GBP/JPY OTC', 'NZD/USD OTC',
-  'EUR/CHF OTC', 'GBP/CHF OTC', 'AUD/JPY OTC', 'CHF/JPY OTC'
+  'EUR/USD OTC', 'GBP/USD OTC', 'USD/JPY OTC',
+  'USD/CAD OTC', 'USD/CHF OTC', 'AUD/USD OTC',
+  'AUD/CAD OTC', 'AUD/NZD OTC', 'NZD/CAD OTC',
+  'USD/BRL OTC', 'USD/INR OTC', 'EUR/GBP OTC'
 ];
-
-const LIVE_PAIRS = [
-  'EUR/USD', 'GBP/USD', 'USD/JPY', 'USD/CAD', 'USD/CHF',
-  'AUD/USD', 'AUD/CAD', 'AUD/NZD', 'NZD/CAD', 'EUR/GBP',
-  'CAD/CHF', 'EUR/JPY', 'GBP/JPY', 'NZD/USD', 'EUR/CHF',
-  'GBP/CHF', 'AUD/JPY', 'CHF/JPY', 'EUR/AUD', 'GBP/AUD'
-];
-
-const ALL_PAIRS = [...PAIRS, ...LIVE_PAIRS];
 
 const TIMEFRAMES = [
   '10 Seconds', '15 Seconds', '30 Seconds',
@@ -78,7 +66,16 @@ async function ensureDatabase() {
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         password TEXT UNIQUE,
         approved_at TIMESTAMPTZ
-      )
+      );
+      CREATE TABLE IF NOT EXISTS app_sessions (
+        token TEXT PRIMARY KEY,
+        role TEXT NOT NULL CHECK (role IN ('user', 'admin')),
+        access_request_id TEXT REFERENCES access_requests(id) ON DELETE CASCADE,
+        expires_at TIMESTAMPTZ NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS app_sessions_expires_at_idx
+        ON app_sessions (expires_at);
     `).catch(error => {
       dbReady = null;
       throw error;
@@ -96,35 +93,65 @@ function toSeconds(timeframe) {
   return TIMEFRAME_SECONDS[timeframe] || 60;
 }
 
-function requireAuth(req, res, next) {
+async function requireAuth(req, res, next) {
   const header = req.headers.authorization || '';
   const token = header.startsWith('Bearer ')
-    ? header.slice(7)
+    ? header.slice(7).trim()
     : '';
 
-  if (!token || !activeTokens.has(token)) {
-    return res.status(401).json({
-      error: 'Unauthorized. Please log in again.'
-    });
+  if (!token) {
+    return res.status(401).json({ error: 'Please log in again.' });
   }
 
-  req.token = token;
-  next();
+  try {
+    await ensureDatabase();
+    const result = await pool.query(
+      `SELECT token FROM app_sessions
+       WHERE token = $1 AND role = 'user' AND expires_at > NOW()`,
+      [token]
+    );
+
+    if (!result.rowCount) {
+      return res.status(401).json({
+        error: 'Session expired. Please log in again.'
+      });
+    }
+
+    req.token = token;
+    return next();
+  } catch (error) {
+    console.error('Auth error:', error.message);
+    return res.status(500).json({ error: 'Authentication service unavailable.' });
+  }
 }
 
-function requireAdmin(req, res, next) {
+async function requireAdmin(req, res, next) {
   const header = req.headers.authorization || '';
   const token = header.startsWith('Bearer ')
-    ? header.slice(7)
+    ? header.slice(7).trim()
     : '';
 
-  if (!token || !adminTokens.has(token)) {
-    return res.status(401).json({
-      error: 'Admin authentication required.'
-    });
+  if (!token) {
+    return res.status(401).json({ error: 'Admin authentication required.' });
   }
 
-  next();
+  try {
+    await ensureDatabase();
+    const result = await pool.query(
+      `SELECT token FROM app_sessions
+       WHERE token = $1 AND role = 'admin' AND expires_at > NOW()`,
+      [token]
+    );
+
+    if (!result.rowCount) {
+      return res.status(401).json({ error: 'Admin session expired. Please log in again.' });
+    }
+
+    return next();
+  } catch (error) {
+    console.error('Admin auth error:', error.message);
+    return res.status(500).json({ error: 'Admin authentication service unavailable.' });
+  }
 }
 
 async function getPrice(pair) {
@@ -293,24 +320,30 @@ app.post('/api/access-request', async (req, res) => {
   }
 });
 
-// Admin login
-app.post('/api/admin/login', (req, res) => {
-  if (!ADMIN_PASSWORD) {
-    return res.status(503).json({
-      error: 'ADMIN_PASSWORD is not configured.'
-    });
+// Admin login (persistent session)
+app.post('/api/admin/login', async (req, res) => {
+  try {
+    if (!ADMIN_PASSWORD) {
+      return res.status(503).json({ error: 'ADMIN_PASSWORD is not configured.' });
+    }
+
+    if ((req.body || {}).password !== ADMIN_PASSWORD) {
+      return res.status(401).json({ error: 'Invalid admin password.' });
+    }
+
+    await ensureDatabase();
+    const token = crypto.randomBytes(32).toString('hex');
+    await pool.query(
+      `INSERT INTO app_sessions (token, role, expires_at)
+       VALUES ($1, 'admin', NOW() + INTERVAL '7 days')`,
+      [token]
+    );
+
+    return res.json({ success: true, token });
+  } catch (error) {
+    console.error('Admin login error:', error.message);
+    return res.status(500).json({ error: 'Admin login service unavailable.' });
   }
-
-  if ((req.body || {}).password !== ADMIN_PASSWORD) {
-    return res.status(401).json({
-      error: 'Invalid admin password.'
-    });
-  }
-
-  const token = crypto.randomBytes(32).toString('hex');
-  adminTokens.add(token);
-
-  return res.json({ success: true, token });
 });
 
 // List access requests
@@ -405,7 +438,11 @@ app.post('/api/login', async (req, res) => {
     }
 
     const token = crypto.randomBytes(32).toString('hex');
-    activeTokens.add(token);
+    await pool.query(
+      `INSERT INTO app_sessions (token, role, access_request_id, expires_at)
+       VALUES ($1, 'user', $2, NOW() + INTERVAL '7 days')`,
+      [token, result.rows[0].id]
+    );
 
     return res.json({ success: true, token });
   } catch (error) {
@@ -419,8 +456,7 @@ app.post('/api/login', async (req, res) => {
 
 // Public pair and timeframe configuration
 app.get('/api/config', (req, res) => {
-  res.set('Cache-Control', 'no-store');
-  res.json({ pairs: PAIRS, livePairs: LIVE_PAIRS, timeframes: TIMEFRAMES });
+  res.json({ pairs: PAIRS, timeframes: TIMEFRAMES });
 });
 
 // Generate a signal
@@ -428,7 +464,7 @@ app.post('/api/signal', requireAuth, async (req, res) => {
   try {
     const { pair, timeframe } = req.body || {};
 
-    if (!ALL_PAIRS.includes(pair) || !TIMEFRAMES.includes(timeframe)) {
+    if (!PAIRS.includes(pair) || !TIMEFRAMES.includes(timeframe)) {
       return res.status(400).json({
         error: 'Select a valid pair and timeframe.'
       });
